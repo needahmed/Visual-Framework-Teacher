@@ -3,26 +3,49 @@
 import React, { useState, useEffect } from 'react';
 import { Panel, PanelGroup, PanelResizeHandle } from 'react-resizable-panels';
 import { GuidePanel } from './GuidePanel';
-import { FlowCanvas } from './visualizer/FlowCanvas';
-import { CodeEditor } from './editor/CodeEditor';
-import { Terminal } from './Terminal';
 import { lessons, getFirstLesson } from '@/data/lessons';
 import { useLessonStore } from '@/store/lessonStore';
 import { motion } from 'framer-motion';
 import { Menu, Book, Code2, Terminal as TerminalIcon } from 'lucide-react';
 import { Separator } from './ui/separator';
 import { Button } from './ui/button';
+import dynamic from 'next/dynamic';
+
+const FlowCanvas = dynamic(() => import('./visualizer/FlowCanvas').then(mod => mod.FlowCanvas), { 
+  ssr: false,
+  loading: () => <div className="h-full bg-slate-900 animate-pulse rounded-lg" />
+});
+
+const CodeEditor = dynamic(() => import('./editor/CodeEditor').then(mod => mod.CodeEditor), { 
+  ssr: false,
+  loading: () => <div className="h-full bg-slate-900 animate-pulse rounded-lg" />
+});
+
+const Terminal = dynamic(() => import('./Terminal').then(mod => mod.Terminal), { 
+  ssr: false,
+  loading: () => <div className="h-full bg-slate-900 animate-pulse rounded-lg" />
+});
 
 export const Workspace: React.FC = () => {
   const [guideOpen, setGuideOpen] = useState(true);
+  const [mounted, setMounted] = useState(false);
   const { setLesson } = useLessonStore();
 
   useEffect(() => {
+    setMounted(true);
     const firstLesson = getFirstLesson();
     if (firstLesson) {
       setLesson(firstLesson);
     }
   }, [setLesson]);
+
+  if (!mounted) {
+    return (
+      <div className="flex h-screen bg-slate-950 overflow-hidden items-center justify-center">
+        <div className="text-slate-400 animate-pulse font-medium">Loading Workspace...</div>
+      </div>
+    );
+  }
 
   return (
     <div className="flex h-screen bg-slate-950 overflow-hidden">

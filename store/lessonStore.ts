@@ -9,11 +9,13 @@ export interface CodeFile {
 
 export interface VisualNode {
   id: string;
-  type: 'module' | 'controller' | 'service';
+  type: 'module' | 'controller' | 'service' | 'entity' | 'middleware' | 'guard' | 'pipe' | 'interceptor' | 'microservice';
   position: { x: number; y: number };
   data: {
     label: string;
     files: string[];
+    isActive?: boolean;
+    attributes?: string[]; // For entities
   };
 }
 
@@ -34,7 +36,16 @@ export interface LessonState {
   isSuccess: boolean;
   currentFile: string;
   
-  setLesson: (lesson: Lesson) => void;
+  // Request Lifecycle Simulation State
+  lifecycleActive: boolean;
+  activeLifecycleStep: number;
+  simulationResult: any;
+  simulationPath: string[]; // Node IDs to hit
+  
+  setLifecycleActive: (active: boolean) => void;
+  setActiveLifecycleStep: (step: number) => void;
+  triggerRequestSimulation: () => Promise<void>;
+  
   updateCode: (filePath: string, content: string) => void;
   addNode: (node: VisualNode) => void;
   removeNode: (nodeId: string) => void;
@@ -46,6 +57,9 @@ export interface LessonState {
   setIsSuccess: (success: boolean) => void;
   setCurrentFile: (filePath: string) => void;
   onNodeDrop: (sourceNodeId: string, targetNodeId: string) => void;
+  createNodeFromDrop: (type: 'controller' | 'service' | 'entity' | 'middleware' | 'guard' | 'pipe' | 'interceptor' | 'microservice', position: { x: number; y: number }, name?: string) => void;
+  syncEntityRelationships: () => void;
+  syncMicroserviceConnections: () => void;
   checkValidation: () => boolean;
   reset: () => void;
 }
@@ -59,7 +73,23 @@ const initialState = {
   serverStarted: false,
   isSuccess: false,
   currentFile: 'src/app.module.ts',
+  lifecycleActive: false,
+  activeLifecycleStep: -1,
+  simulationResult: null,
+  simulationPath: [],
 };
+
+export const LIFECYCLE_STEPS = [
+  { id: 0, name: 'Client Request', description: 'Incoming HTTP GET Request for /cats', nodeType: 'client' },
+  { id: 1, name: 'Middleware', description: 'Handling global and route-level middleware', nodeType: 'lifecycle' },
+  { id: 2, name: 'Guards', description: 'Checking authentication and authorization', nodeType: 'lifecycle' },
+  { id: 3, name: 'Interceptors', description: 'Pre-processing the request', nodeType: 'lifecycle' },
+  { id: 4, name: 'Pipes', description: 'Validating and transforming input data', nodeType: 'lifecycle' },
+  { id: 5, name: 'Controller', description: 'Routing to the specific @Get() handler', nodeType: 'controller' },
+  { id: 6, name: 'Service', description: 'Executing business logic and fetching data', nodeType: 'service' },
+  { id: 7, name: 'Interceptors', description: 'Post-processing the response', nodeType: 'lifecycle' },
+  { id: 8, name: 'Client Response', description: 'Final response sent back to client', nodeType: 'client' },
+];
 
 const parseModuleCode = (code: string): { imports: string[]; controllers: string[]; providers: string[] } => {
   const imports: string[] = [];
@@ -184,6 +214,14 @@ export const useLessonStore = create<LessonState>()(
           const { codeFiles } = get();
           const newCodeFiles = { ...codeFiles, [filePath]: content };
           set({ codeFiles: newCodeFiles });
+          
+          // Sync with WebContainer if it's booted
+          import('@/lib/webcontainer').then(({ writeFile }) => {
+            writeFile(filePath, content).catch(console.error);
+          });
+
+          get().syncEntityRelationships();
+          get().syncMicroserviceConnections();
           get().checkValidation();
         },
 
@@ -306,7 +344,272 @@ export const useLessonStore = create<LessonState>()(
         reset: () => {
           set(initialState);
         },
+
+        setLifecycleActive: (active: boolean) => set({ lifecycleActive: active }),
+        setActiveLifecycleStep: (step: number) => set({ activeLifecycleStep: step }),
+
+        triggerRequestSimulation: async () => {
+          const { serverStarted, isRunning } = get();
+          if (!serverStarted || !isRunning) return;
+
+          set({ 
+            lifecycleActive: true, 
+            activeLifecycleStep: 0,
+            simulationResult: null 
+          });
+
+          // Simulate each step
+          for (let i = 0; i < LIFECYCLE_STEPS.length; i++) {
+            set({ activeLifecycleStep: i });
+            // Small delay for each step
+            await new Promise(resolve => setTimeout(resolve, 1000));
+            
+            if (i === 6) { // Service step
+               set({ simulationResult: { status: 200, data: [{ id: 1, name: 'Tom' }, { id: 2, name: 'Luna' }] } });
+            }
+          }
+
+          // Keep active for a bit at the end then hide
+          await new Promise(resolve => setTimeout(resolve, 2000));
+          set({ lifecycleActive: false, activeLifecycleStep: -1 });
+        },
+
+        createNodeFromDrop: (type: 'controller' | 'service' | 'entity' | 'middleware' | 'guard' | 'pipe' | 'interceptor' | 'microservice', position: { x: number; y: number }, name: string = 'new') => {
+          const { codeFiles, visualNodes } = get();
+          const className = name.charAt(0).toUpperCase() + name.slice(1);
+          const fileName = name.toLowerCase();
+          
+          let filePath = '';
+          switch(type) {
+            case 'entity': filePath = `src/entities/${fileName}.entity.ts`; break;
+            case 'middleware': filePath = `src/common/middleware/${fileName}.middleware.ts`; break;
+            case 'guard': filePath = `src/common/guards/${fileName}.guard.ts`; break;
+            case 'pipe': filePath = `src/common/pipes/${fileName}.pipe.ts`; break;
+            case 'interceptor': filePath = `src/common/interceptors/${fileName}.interceptor.ts`; break;
+            case 'microservice': filePath = `src/${fileName}-service/main.ts`; break;
+            default: filePath = `src/${fileName}/${fileName}.${type}.ts`;
+          }
+          
+          if (visualNodes.find(n => n.id === `${fileName}-${type}`)) {
+            return;
+          }
+
+          let newCode = '';
+          if (type === 'controller') {
+            newCode = `import { Controller, Get } from '@nestjs/common';
+
+@Controller('${fileName}')
+export class ${className}Controller {
+  @Get()
+  findAll() {
+    return 'This action returns all ${fileName}';
+  }
+}`;
+          } else if (type === 'service') {
+            newCode = `import { Injectable } from '@nestjs/common';
+
+@Injectable()
+export class ${className}Service {
+  findAll() {
+    return [];
+  }
+}`;
+          } else if (type === 'entity') {
+            newCode = `import { Entity, Column, PrimaryGeneratedColumn } from 'typeorm';
+
+@Entity()
+export class ${className} {
+  @PrimaryGeneratedColumn()
+  id: number;
+
+  @Column()
+  name: string;
+}`;
+          } else if (type === 'middleware') {
+            newCode = `import { Injectable, NestMiddleware } from '@nestjs/common';
+import { Request, Response, NextFunction } from 'express';
+
+@Injectable()
+export class ${className}Middleware implements NestMiddleware {
+  use(req: Request, res: Response, next: NextFunction) {
+    console.log('${className} Middleware triggered...');
+    next();
+  }
+}`;
+          } else if (type === 'guard') {
+            newCode = `import { Injectable, CanActivate, ExecutionContext } from '@nestjs/common';
+import { Observable } from 'rxjs';
+
+@Injectable()
+export class ${className}Guard implements CanActivate {
+  canActivate(
+    context: ExecutionContext,
+  ): boolean | Promise<boolean> | Observable<boolean> {
+    return true;
+  }
+}`;
+          } else if (type === 'pipe') {
+            newCode = `import { PipeTransform, Injectable, ArgumentMetadata } from '@nestjs/common';
+
+@Injectable()
+export class ${className}Pipe implements PipeTransform {
+  transform(value: any, metadata: ArgumentMetadata) {
+    return value;
+  }
+}`;
+          } else if (type === 'interceptor') {
+            newCode = `import { Injectable, NestInterceptor, ExecutionContext, CallHandler } from '@nestjs/common';
+import { Observable } from 'rxjs';
+import { tap } from 'rxjs/operators';
+
+@Injectable()
+export class ${className}Interceptor implements NestInterceptor {
+  intercept(context: ExecutionContext, next: CallHandler): Observable<any> {
+    console.log('Before...');
+    return next.handle().pipe(tap(() => console.log('After...')));
+  }
+}`;
+          } else if (type === 'microservice') {
+            newCode = `import { NestFactory } from '@nestjs/core';
+import { Transport, MicroserviceOptions } from '@nestjs/microservices';
+import { AppModule } from './app.module';
+
+async function bootstrap() {
+  const app = await NestFactory.createMicroservice<MicroserviceOptions>(AppModule, {
+    transport: Transport.NATS,
+    options: {
+      servers: ['nats://localhost:4222'],
+    },
+  });
+  await app.listen();
+}
+bootstrap();`;
+          }
+
+          // 1. Create the new file
+          get().updateCode(filePath, newCode);
+
+          // 2. Update AppModule (only for controllers/services)
+          if (type === 'controller' || type === 'service') {
+            const appModulePath = 'src/app.module.ts';
+            let appModuleCode = codeFiles[appModulePath] || '';
+            
+            const importPath = `./${fileName}/${fileName}.${type}`;
+            const importStatement = `import { ${className}${type.charAt(0).toUpperCase() + type.slice(1)} } from '${importPath}';\n`;
+            
+            if (!appModuleCode.includes(importPath)) {
+              appModuleCode = importStatement + appModuleCode;
+            }
+
+            const arrayName = type === 'controller' ? 'controllers' : 'providers';
+            const updatedModuleCode = updateModuleCode(appModuleCode, arrayName, `${className}${type.charAt(0).toUpperCase() + type.slice(1)}`);
+            
+            get().updateCode(appModulePath, updatedModuleCode);
+          }
+
+          // 3. Add visual node
+          const newNode: VisualNode = {
+            id: `${fileName}-${type}`,
+            type: type,
+            position,
+            data: {
+              label: type === 'entity' ? className : `${className}${type.charAt(0).toUpperCase() + type.slice(1)}`,
+              files: [filePath]
+            }
+          };
+
+          get().addNode(newNode);
+          get().setCurrentFile(filePath);
+        },
+
+        syncEntityRelationships: () => {
+          const { codeFiles, visualNodes, visualEdges } = get();
+          const entities = visualNodes.filter(n => n.type === 'entity');
+          const newEdges: VisualEdge[] = [...visualEdges.filter(e => e.type !== 'relationship')];
+
+          entities.forEach(entity => {
+            const content = codeFiles[entity.data.files[0]] || '';
+            
+            // Regex to find relationships
+            // Example: @ManyToOne(() => Owner, (owner) => owner.cats)
+            const relRegex = /@(OneToMany|ManyToOne|OneToOne|ManyToMany)\(\s*\(\)\s*=>\s*(\w+)/g;
+            let match;
+
+            while ((match = relRegex.exec(content)) !== null) {
+              const [_, type, targetClassName] = match;
+              const targetEntity = entities.find(e => e.data.label === targetClassName);
+
+              if (targetEntity) {
+                const edgeId = `rel-${entity.id}-${targetEntity.id}`;
+                if (!newEdges.find(e => e.id === edgeId)) {
+                  let label = '';
+                  switch(type) {
+                    case 'OneToMany': label = '1:N'; break;
+                    case 'ManyToOne': label = 'N:1'; break;
+                    case 'OneToOne': label = '1:1'; break;
+                    case 'ManyToMany': label = 'N:M'; break;
+                  }
+
+                  newEdges.push({
+                    id: edgeId,
+                    source: entity.id,
+                    target: targetEntity.id,
+                    type: 'relationship',
+                    label
+                  } as any);
+                }
+              }
+            }
+          });
+
+          if (JSON.stringify(newEdges) !== JSON.stringify(visualEdges)) {
+            set({ visualEdges: newEdges });
+          }
+        },
+
+        syncMicroserviceConnections: () => {
+          const { codeFiles, visualNodes, visualEdges } = get();
+          const apps = visualNodes.filter(n => n.type === 'module');
+          const services = visualNodes.filter(n => n.type === 'microservice');
+          const newEdges: VisualEdge[] = [...visualEdges.filter(e => e.type !== 'transporter')];
+
+          // Check for @MessagePattern in services and ClientProxy in apps
+          services.forEach(service => {
+            const serviceContent = Object.values(codeFiles).join('\n');
+            const patternRegex = /@MessagePattern\(\s*['"](.+?)['"]\s*\)/g;
+            let match;
+
+            while ((match = patternRegex.exec(serviceContent)) !== null) {
+              const pattern = match[1];
+              
+              // Find apps that send this pattern
+              apps.forEach(app => {
+                const appContent = Object.values(codeFiles).join('\n');
+                if (appContent.includes(`.send('${pattern}'`) || appContent.includes(`.emit('${pattern}'`)) {
+                  const edgeId = `trans-${app.id}-${service.id}`;
+                  if (!newEdges.find(e => e.id === edgeId)) {
+                    newEdges.push({
+                      id: edgeId,
+                      source: app.id,
+                      target: service.id,
+                      type: 'transporter',
+                      label: 'NATS',
+                      animated: true,
+                    } as any);
+                  }
+                }
+              });
+            }
+          });
+
+          if (JSON.stringify(newEdges) !== JSON.stringify(visualEdges)) {
+            set({ visualEdges: newEdges });
+          }
+        },
+
       }),
+
+
       {
         name: 'nestquest-lesson-store',
       }

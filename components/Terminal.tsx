@@ -5,10 +5,10 @@ import { Terminal as XTerm } from 'xterm';
 import { FitAddon } from 'xterm-addon-fit';
 import 'xterm/css/xterm.css';
 import { WebContainer } from '@webcontainer/api';
-import { startServer, getWebContainer } from '@/lib/webcontainer';
+import { startServer, getWebContainer, mountFiles } from '@/lib/webcontainer';
 import { useLessonStore } from '@/store/lessonStore';
 import { Button } from './ui/button';
-import { PlayCircle, Square } from 'lucide-react';
+import { PlayCircle, Square, Send, Activity } from 'lucide-react';
 
 interface TerminalProps {
   className?: string;
@@ -20,7 +20,15 @@ export const Terminal: React.FC<TerminalProps> = ({ className }) => {
   const fitAddonRef = useRef<FitAddon | null>(null);
   const processRef = useRef<any>(null);
   
-  const { isRunning, setIsRunning, setServerStarted, currentLesson } = useLessonStore();
+  const { 
+    isRunning, 
+    setIsRunning, 
+    setServerStarted, 
+    serverStarted,
+    currentLesson,
+    triggerRequestSimulation,
+    lifecycleActive
+  } = useLessonStore();
 
   useEffect(() => {
     if (!terminalRef.current) return;
@@ -55,7 +63,17 @@ export const Terminal: React.FC<TerminalProps> = ({ className }) => {
     const fitAddon = new FitAddon();
     terminal.loadAddon(fitAddon);
     terminal.open(terminalRef.current);
-    fitAddon.fit();
+    
+    // Use a small delay to ensure the container is rendered and has dimensions
+    const fitTimeout = setTimeout(() => {
+      try {
+        if (terminalRef.current?.getBoundingClientRect().width) {
+          fitAddon.fit();
+        }
+      } catch (e) {
+        console.warn('Initial terminal fit failed:', e);
+      }
+    }, 100);
 
     xtermRef.current = terminal;
     fitAddonRef.current = fitAddon;
@@ -64,27 +82,24 @@ export const Terminal: React.FC<TerminalProps> = ({ className }) => {
     terminal.writeln('Click "Run Server" to start your NestJS application');
     terminal.writeln('');
 
-    const handleResize = () => {
-      fitAddon.fit();
-    };
+    const resizeObserver = new ResizeObserver(() => {
+      if (terminalRef.current && terminalRef.current.offsetWidth > 0 && terminalRef.current.offsetHeight > 0) {
+        try {
+          fitAddon.fit();
+        } catch (e) {
+          // Ignore fit errors during rapid resizing
+        }
+      }
+    });
 
-    window.addEventListener('resize', handleResize);
+    resizeObserver.observe(terminalRef.current);
 
     return () => {
-      window.removeEventListener('resize', handleResize);
+      resizeObserver.disconnect();
       terminal.dispose();
       xtermRef.current = null;
       fitAddonRef.current = null;
     };
-  }, []);
-
-  useEffect(() => {
-    const handleResize = () => {
-      fitAddonRef.current?.fit();
-    };
-
-    window.addEventListener('resize', handleResize);
-    return () => window.removeEventListener('resize', handleResize);
   }, []);
 
   const handleRunServer = async () => {
@@ -111,14 +126,17 @@ export const Terminal: React.FC<TerminalProps> = ({ className }) => {
     setIsRunning(true);
 
     try {
-      const container = await getWebContainer();
+      terminal.writeln('🏗️  Initializing WebContainer...');
+      const { codeFiles } = useLessonStore.getState();
+      
+      const container = await mountFiles(codeFiles);
       if (!container) {
         terminal.writeln('❌ Failed to initialize WebContainer');
         setIsRunning(false);
         return;
       }
 
-      terminal.writeln('✅ WebContainer ready');
+      terminal.writeln('✅ WebContainer ready and files mounted');
       terminal.writeln('');
       terminal.writeln('$ npm install');
 
@@ -178,24 +196,37 @@ export const Terminal: React.FC<TerminalProps> = ({ className }) => {
           <div className="w-3 h-3 rounded-full bg-yellow-500"></div>
           <div className="w-3 h-3 rounded-full bg-green-500"></div>
         </div>
-        <Button
-          onClick={handleRunServer}
-          variant={isRunning ? "destructive" : "default"}
-          size="sm"
-          className="flex items-center gap-2"
-        >
-          {isRunning ? (
-            <>
-              <Square className="w-4 h-4" />
-              Stop Server
-            </>
-          ) : (
-            <>
-              <PlayCircle className="w-4 h-4" />
-              Run Server
-            </>
-          )}
-        </Button>
+        <div className="flex items-center gap-3">
+          <Button
+            onClick={() => triggerRequestSimulation()}
+            disabled={!serverStarted || !isRunning || lifecycleActive}
+            variant="outline"
+            size="sm"
+            className="flex items-center gap-2 bg-slate-800 border-slate-600 text-slate-300 hover:bg-slate-700 hover:text-white"
+          >
+            <Send className={`w-4 h-4 ${lifecycleActive ? 'animate-pulse text-amber-400' : ''}`} />
+            {lifecycleActive ? "Request Live..." : "Test Request"}
+          </Button>
+
+          <Button
+            onClick={handleRunServer}
+            variant={isRunning ? "destructive" : "default"}
+            size="sm"
+            className="flex items-center gap-2"
+          >
+            {isRunning ? (
+              <>
+                <Square className="w-4 h-4" />
+                Stop Server
+              </>
+            ) : (
+              <>
+                <PlayCircle className="w-4 h-4" />
+                Run Server
+              </>
+            )}
+          </Button>
+        </div>
       </div>
       <div className="flex-1 overflow-hidden">
         <div ref={terminalRef} className="h-full w-full" />
